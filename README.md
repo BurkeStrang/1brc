@@ -33,6 +33,7 @@ This implementation achieves high performance through several optimizations:
 - **Fixed-Point Arithmetic**: Processes temperatures as integers (tenths) to avoid floating-point operations
 - **Zero-Copy Parsing**: Parses directly from byte spans without intermediate string allocations
 - **Efficient Aggregation**: Uses `CollectionsMarshal` for high-performance dictionary operations
+- **AOT Compilation**: Native ahead-of-time compilation eliminates JIT overhead and reduces startup time
 
 ## Getting Started
 
@@ -74,6 +75,9 @@ dotnet build
 
 # Build for maximum performance
 dotnet build -c Release
+
+# Publish with AOT compilation for ultimate performance
+dotnet publish program -c Release -r linux-x64 -p:PublishAot=true -p:StripSymbols=true -p:SelfContained=true
 ```
 
 ### Running
@@ -87,6 +91,9 @@ dotnet run --project program -- path/to/measurements.csv 16
 
 # For best performance, use Release build
 dotnet run --project program -c Release -- path/to/measurements.csv
+
+# Run AOT-compiled executable (after publishing)
+./program/bin/Release/net9.0/linux-x64/publish/1brc path/to/measurements.csv
 ```
 
 ### Benchmarking
@@ -186,13 +193,32 @@ This avoids floating-point arithmetic and maintains precision for the required o
 ## Example Usage
 
 ```bash
-# Process a 1 billion row file
+# Process a 1 billion row file with JIT compilation
 dotnet run --project program -c Release -- measurements-1b.txt
+
+# Process with AOT-compiled executable for maximum performance
+./program/bin/Release/net9.0/linux-x64/publish/1brc measurements-1b.txt
 
 # Output:
 # {Abha=-31.1/18.0/66.5, Abidjan=-25.9/26.0/67.0, ...}
 # Processed 10,000,000 lines in 0.40s  |  25,100,000 lines/s  |  950.4 MiB/s
 ```
+
+## AOT Performance Benefits
+
+AOT (Ahead-of-Time) compilation provides several performance advantages:
+
+- **Faster Startup**: No JIT compilation overhead at runtime
+- **Smaller Memory Footprint**: No need to store IL code or JIT compiler in memory
+- **Predictable Performance**: Eliminates JIT compilation pauses during execution
+- **Native Code Optimization**: Direct machine code generation optimized for the target platform
+
+To publish with AOT, use:
+```bash
+dotnet publish program -c Release -r linux-x64 -p:PublishAot=true -p:StripSymbols=true -p:SelfContained=true
+```
+
+The resulting executable will be a single native binary with no .NET runtime dependencies.
 
 ## Contributing
 

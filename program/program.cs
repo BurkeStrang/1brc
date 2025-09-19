@@ -1,5 +1,4 @@
 ﻿using System.Buffers;
-using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -7,6 +6,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace program;
 
+[SkipLocalsInit]
 public static class OneBrc
 {
   // Entry point for normal runs (Stopwatch macro-bench friendly)
@@ -41,16 +41,17 @@ public static class OneBrc
     long length = RandomAccess.GetLength(handle);
 
     var ranges = MakeRanges(length, workers);
-    var partials = new ConcurrentBag<Dictionary<string, Stats>>();
+    var partials = new Dictionary<string, Stats>[ranges.Length];
 
-    Parallel.ForEach(ranges, range =>
+    Parallel.For(0, ranges.Length, new ParallelOptions { MaxDegreeOfParallelism = workers }, i =>
     {
-      var local = new Dictionary<string, Stats>(1024, StringComparer.Ordinal);
-      ProcessRange(handle, range.start, range.end, local);
-      partials.Add(local);
+      var (s, e) = ranges[i];
+      var local = new Dictionary<string, Stats>(2048, StringComparer.Ordinal);
+      ProcessRange(handle, s, e, local);
+      partials[i] = local;
     });
 
-    var final = new Dictionary<string, Stats>(1 << 16, StringComparer.Ordinal);
+    var final = new Dictionary<string, Stats>(65536, StringComparer.Ordinal);
     long totalCount = 0;
 
     foreach (var map in partials)
@@ -67,15 +68,21 @@ public static class OneBrc
     var names = final.Keys.ToList();
     names.Sort(StringComparer.Ordinal);
 
-    var sb = new StringBuilder(1 << 20).Append('{');
+    var sb = new StringBuilder(Math.Max(2, names.Count * 32)).Append('{');
     for (int i = 0; i < names.Count; i++)
     {
       var n = names[i];
       var st = final[n];
       if (i > 0) sb.Append(", ");
+
+      // integer nearest rounding without FP
+      long sum = st.Sum;
+      int c = st.Count;
+      int avg = sum >= 0 ? (int)((sum + (c / 2)) / c) : (int)((sum - (c / 2)) / c);
+
       sb.Append(n).Append('=')
         .Append(FormatTenth(st.Min)).Append('/')
-        .Append(FormatTenth((int)Math.Round((double)st.Sum / st.Count))).Append('/')
+        .Append(FormatTenth(avg)).Append('/')
         .Append(FormatTenth(st.Max));
     }
     sb.Append('}');
@@ -85,6 +92,7 @@ public static class OneBrc
 
   internal static (long start, long end)[] MakeRanges(long length, int n)
   {
+    if (n <= 1) return [(0L, length)];
     var res = new (long, long)[n];
     long baseSize = length / n;
     long pos = 0;
@@ -100,17 +108,18 @@ public static class OneBrc
 
   internal static void ProcessRange(
       SafeFileHandle handle, long start, long end,
-      Dictionary<string, Stats> map, int blockSize = 1 << 20)
+      Dictionary<string, Stats> map, int blockSize = 1 << 25 /* 32 MiB */)
   {
-    byte[] buffer = ArrayPool<byte>.Shared.Rent(blockSize + 256);
+    byte[] buffer = ArrayPool<byte>.Shared.Rent(blockSize + 512);
     var utf8 = Encoding.UTF8;
-
-    var pool = new StationPool();
+    var pool = StationPool.TlsGetOrCreate();
 
     long pos = start;
     bool firstBlock = true;
+
+    // Carry buffer for partial line across block boundaries
+    Span<byte> carry = stackalloc byte[512];
     int carryLen = 0;
-    Span<byte> carry = stackalloc byte[256];
 
     while (pos < end)
     {
@@ -121,60 +130,64 @@ public static class OneBrc
       var span = buffer.AsSpan(0, read);
       int idx = 0;
 
+      // Skip partial first line if we didn’t start at 0
       if (firstBlock && start != 0)
       {
-        while (idx < span.Length && span[idx] != (byte)'\n') idx++;
-        if (idx < span.Length) idx++;
+        int nl = span.IndexOf((byte)'\n');
+        if (nl >= 0) idx = nl + 1; else { pos += read; firstBlock = false; continue; }
       }
       firstBlock = false;
 
       while (idx < span.Length)
       {
-        int lineStart = idx;
-        while (idx < span.Length && span[idx] != (byte)'\n') idx++;
-        bool eol = idx < span.Length && span[idx] == (byte)'\n';
-
-        if (!eol)
+        int rel = span[idx..].IndexOf((byte)'\n');
+        if (rel < 0)
         {
-          int tailLen = span.Length - lineStart;
-          if (carryLen + tailLen > carry.Length)
-            carry = GrowStackSpan(carry, carryLen + tailLen);
-          span[lineStart..].CopyTo(carry[carryLen..]);
+          // tail (partial line)
+          int tailLen = span.Length - idx;
+          EnsureCarry(ref carry, carryLen + tailLen, carryLen);
+          span.Slice(idx, tailLen).CopyTo(carry[carryLen..]);
           carryLen += tailLen;
           break;
         }
 
-        int lineLen = idx - lineStart;
+        int lineLen = rel;
 
         if (carryLen > 0)
         {
-          if (carryLen + lineLen > carry.Length)
-            carry = GrowStackSpan(carry, carryLen + lineLen);
-          span.Slice(lineStart, lineLen).CopyTo(carry[carryLen..]);
-
-          ParseLine(carry[..(carryLen + lineLen)], map, utf8, pool);
+          EnsureCarry(ref carry, carryLen + lineLen, carryLen);
+          span.Slice(idx, lineLen).CopyTo(carry[carryLen..]);
+          ParseLineOnce(carry[..(carryLen + lineLen)], map, utf8, pool);
           carryLen = 0;
         }
         else
         {
-          ParseLine(span.Slice(lineStart, lineLen), map, utf8, pool);
+          ParseLineOnce(span.Slice(idx, lineLen), map, utf8, pool);
         }
-        idx++;
+
+        idx += lineLen + 1; // skip '\n'
       }
+
       pos += read;
     }
+
     ArrayPool<byte>.Shared.Return(buffer);
   }
 
   [MethodImpl(MethodImplOptions.AggressiveInlining)]
-  internal static Span<byte> GrowStackSpan(Span<byte> span, int needed)
+  private static void EnsureCarry(ref Span<byte> carry, int needed, int used)
   {
-    var arr = new byte[Math.Max(needed, span.Length * 2)];
-    span.CopyTo(arr);
-    return arr;
+    if (needed <= carry.Length) return;
+    int newSize = Math.Max(needed, carry.Length * 2);
+    var arr = new byte[newSize];
+    carry[..used].CopyTo(arr);
+    carry = arr; // switch to array-backed span
   }
 
-  internal static void ParseLine(
+  // Single-pass parse for one line slice: find ';' once, decode station (ASCII fast path),
+  // parse temperature tenths with rounding, and aggregate into the map.
+  [MethodImpl(MethodImplOptions.AggressiveInlining)]
+  internal static void ParseLineOnce(
       ReadOnlySpan<byte> line,
       Dictionary<string, Stats> map,
       Encoding utf8,
@@ -194,29 +207,38 @@ public static class OneBrc
     else stats.Add(temp10);
   }
 
+  // Integer parser for tenths with rounding from subsequent digits, handles negatives
   [MethodImpl(MethodImplOptions.AggressiveInlining)]
   internal static int ParseTempTenths(ReadOnlySpan<byte> s)
   {
-    int sign = 1, i = 0;
-    if (s[0] == (byte)'-') { sign = -1; i = 1; }
+    int i = 0, sign = 1;
+    if (s.Length > 0 && s[0] == (byte)'-') { sign = -1; i = 1; }
 
-    int val = 0, frac = 0, fracDigits = 0;
+    int whole = 0;
     for (; i < s.Length; i++)
     {
       byte c = s[i];
       if (c == (byte)'.') { i++; break; }
-      val = val * 10 + (c - (byte)'0');
+      whole = (whole * 10) + (c - (byte)'0');
     }
-    for (; i < s.Length; i++)
+
+    int tenths = 0;
+    if (i < s.Length)
     {
-      byte c = s[i];
-      frac = frac * 10 + (c - (byte)'0');
-      fracDigits++;
+      tenths = s[i] - (byte)'0';
+      i++;
     }
-    if (fracDigits == 0) return sign * val * 10;
-    if (fracDigits == 1) return sign * (val * 10 + frac);
-    int rounded = (int)Math.Round(frac / Math.Pow(10, fracDigits - 1));
-    return sign * (val * 10 + rounded);
+
+    // Round by the next digit (hundredths) if present (away from zero)
+    int roundUp = 0;
+    if (i < s.Length)
+    {
+      byte d = s[i];
+      if (d >= (byte)'5') roundUp = 1;
+    }
+
+    int t10 = whole * 10 + tenths + roundUp;
+    return sign * t10;
   }
 
   internal struct Stats(int t)
@@ -226,11 +248,11 @@ public static class OneBrc
     public int Count = 1;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Add(int t)
+    public void Add(int v)
     {
-      if (t < Min) Min = t;
-      if (t > Max) Max = t;
-      Sum += t; Count++;
+      if (v < Min) Min = v;
+      if (v > Max) Max = v;
+      Sum += v; Count++;
     }
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Merge(Stats other)
@@ -241,60 +263,93 @@ public static class OneBrc
     }
   }
 
+  // Fast writer for tenths (e.g., 12.3 / -7.0)
   [MethodImpl(MethodImplOptions.AggressiveInlining)]
   internal static string FormatTenth(int t10)
   {
     bool neg = t10 < 0;
-    int x = Math.Abs(t10);
+    int x = neg ? -t10 : t10;
     int whole = x / 10;
-    int frac = x % 10;
-    return neg ? $"-{whole}.{frac}" : $"{whole}.{frac}";
+    int frac = x - whole * 10;
+
+    // digit count for whole
+    int digits = 1;
+    for (int tmp = whole; tmp >= 10; tmp /= 10) digits++;
+    int len = (neg ? 1 : 0) + digits + 2; // sign + digits + '.' + frac
+
+    return string.Create(len, (neg, whole, frac), static (span, s) =>
+    {
+      int pos = 0;
+      if (s.neg) span[pos++] = '-';
+
+      // write whole in reverse then reverse that segment
+      int start = pos;
+      int w = s.whole;
+      do { span[pos++] = (char)('0' + (w % 10)); w /= 10; } while (w > 0);
+      span[start..pos].Reverse();
+
+      span[pos++] = '.';
+      span[pos++] = (char)('0' + s.frac);
+    });
   }
 
-  internal class StationPool
+  // Bucketized station interner with ASCII fast path; one UTF-8 decode per unique station
+  internal sealed class StationPool
   {
-    private readonly Dictionary<int, List<(byte[] bytes, string station)>> _buckets = new();
+    private const int BucketCount = 1 << 12; // 4096
+    private readonly List<(byte[] bytes, string str)>[] _buckets = new List<(byte[], string)>[BucketCount];
+
+    [ThreadStatic] private static StationPool? _tls;
+    public static StationPool TlsGetOrCreate() => _tls ??= new StationPool();
 
     public string GetStation(ReadOnlySpan<byte> stationBytes, Encoding utf8)
     {
-      int hash = ComputeHash(stationBytes);
-      
-      if (_buckets.TryGetValue(hash, out var bucket))
+      int h = ComputeHash(stationBytes);
+      int b = h & (BucketCount - 1);
+
+      var list = _buckets[b];
+      if (list is null)
       {
-        foreach (var (bytes, station) in bucket)
-        {
-          if (stationBytes.SequenceEqual(bytes))
-            return station;
-        }
-        
-        // Hash collision - add new entry to bucket
-        string newStation = utf8.GetString(stationBytes);
-        bucket.Add((stationBytes.ToArray(), newStation));
-        return newStation;
+        list = new List<(byte[], string)>(4);
+        string s = IsAscii(stationBytes) ? CreateAsciiString(stationBytes) : utf8.GetString(stationBytes);
+        list.Add((stationBytes.ToArray(), s));
+        _buckets[b] = list;
+        return s;
       }
-      else
+
+      for (int i = 0; i < list.Count; i++)
       {
-        // New hash - create bucket and add entry
-        string newStation = utf8.GetString(stationBytes);
-        _buckets[hash] = new List<(byte[], string)> { (stationBytes.ToArray(), newStation) };
-        return newStation;
+        var (bytes, s) = list[i];
+        if (stationBytes.SequenceEqual(bytes)) return s;
       }
+
+      string ns = IsAscii(stationBytes) ? CreateAsciiString(stationBytes) : utf8.GetString(stationBytes);
+      list.Add((stationBytes.ToArray(), ns));
+      return ns;
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsAscii(ReadOnlySpan<byte> s)
+    {
+      // simple, branch-friendly check; JIT may vectorize
+      for (int i = 0; i < s.Length; i++) if (s[i] >= 0x80) return false;
+      return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static string CreateAsciiString(ReadOnlySpan<byte> s)
+      => string.Create(s.Length, s, static (span, src) =>
+      {
+        for (int i = 0; i < src.Length; i++) span[i] = (char)src[i];
+      });
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int ComputeHash(ReadOnlySpan<byte> bytes)
     {
-      // Simple FNV-1a hash
-      const int fnvPrime = 16777619;
-      const int fnvOffsetBasis = unchecked((int)2166136261);
-      
-      int hash = fnvOffsetBasis;
-      foreach (byte b in bytes)
-      {
-        hash ^= b;
-        hash *= fnvPrime;
-      }
-      return hash;
+      const uint FnvPrime = 16777619;
+      uint hash = 2166136261;
+      foreach (byte b in bytes) { hash ^= b; hash *= FnvPrime; }
+      return (int)hash;
     }
   }
 }

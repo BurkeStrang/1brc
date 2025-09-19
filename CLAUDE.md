@@ -12,17 +12,23 @@ This is a C# implementation of the One Billion Row Challenge (1BRC) - a performa
 # Build the solution
 dotnet build
 
+# Build for release (recommended for performance testing)
+dotnet build -c Release
+
 # Run the main program (requires path to measurements file)
 dotnet run --project program -- <path-to-measurements.csv> [workers]
+
+# Run with release build for best performance
+dotnet run --project program -c Release -- <path-to-measurements.csv>
 
 # Quick verification with smaller dataset (after extracting data files)
 dotnet run --project program -- measurements-10000000.txt
 
-# Run benchmarks
+# Run benchmarks with 10 million row dataset (default)
 dotnet run --project benchmark -c Release
 
-# Build for release (recommended for performance testing)
-dotnet build -c Release
+# Run benchmarks with 1 billion row dataset
+dotnet run --project benchmark -c Release -- large
 ```
 
 ## Architecture
@@ -102,6 +108,7 @@ Palembang;38.8
 
 - **.NET 9.0**: Target framework
 - **BenchmarkDotNet 0.15.3**: Performance measurement framework (benchmark project only)
+- **7-Zip**: Required for extracting measurement data files
 
 ## Key Implementation Details
 
