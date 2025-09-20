@@ -6,7 +6,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace program;
 
-[SkipLocalsInit]
+// [SkipLocalsInit]
 public static class OneBrc
 {
   // Entry point for normal runs (Stopwatch macro-bench friendly)
@@ -90,7 +90,7 @@ public static class OneBrc
     return (sb.ToString(), totalCount);
   }
 
-  internal static (long start, long end)[] MakeRanges(long length, int n)
+  public static (long start, long end)[] MakeRanges(long length, int n)
   {
     if (n <= 1) return [(0L, length)];
     var res = new (long, long)[n];
@@ -209,7 +209,7 @@ public static class OneBrc
 
   // Integer parser for tenths with rounding from subsequent digits, handles negatives
   [MethodImpl(MethodImplOptions.AggressiveInlining)]
-  internal static int ParseTempTenths(ReadOnlySpan<byte> s)
+  public static int ParseTempTenths(ReadOnlySpan<byte> s)
   {
     int i = 0, sign = 1;
     if (s.Length > 0 && s[0] == (byte)'-') { sign = -1; i = 1; }
@@ -241,7 +241,7 @@ public static class OneBrc
     return sign * t10;
   }
 
-  internal struct Stats(int t)
+  public struct Stats(int t)
   {
     public int Min = t, Max = t;
     public long Sum = t;
@@ -265,7 +265,7 @@ public static class OneBrc
 
   // Fast writer for tenths (e.g., 12.3 / -7.0)
   [MethodImpl(MethodImplOptions.AggressiveInlining)]
-  internal static string FormatTenth(int t10)
+  public static string FormatTenth(int t10)
   {
     bool neg = t10 < 0;
     int x = neg ? -t10 : t10;
@@ -294,7 +294,7 @@ public static class OneBrc
   }
 
   // Bucketized station interner with ASCII fast path; one UTF-8 decode per unique station
-  internal sealed class StationPool
+  public sealed class StationPool
   {
     private const int BucketCount = 1 << 12; // 4096
     private readonly List<(byte[] bytes, string str)>[] _buckets = new List<(byte[], string)>[BucketCount];

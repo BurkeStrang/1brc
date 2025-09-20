@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <ServerGarbageCollection>true</ServerGarbageCollection>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- <AllowUnsafeBlocks>true</AllowUnsafeBlocks> -->
     <PublishReadyToRun>false</PublishReadyToRun>   <!-- better JIT quality at runtime -->
     <TieredPGO>true</TieredPGO>
     <OptimizationPreference>Speed</OptimizationPreference>

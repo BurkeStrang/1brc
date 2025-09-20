@@ -6,6 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a C# implementation of the One Billion Row Challenge (1BRC) - a performance-oriented file processing challenge. The project processes massive CSV files containing weather station measurements and calculates min/mean/max temperatures per station.
 
+Input format: `<station_name>;<temperature>`
+Output format: `{<station_name>=<min>/<mean>/<max>, ...}` sorted alphabetically by station name.
+
 ## Build and Run Commands
 
 ```bash
@@ -24,11 +27,23 @@ dotnet run --project program -c Release -- <path-to-measurements.csv>
 # Quick verification with smaller dataset (after extracting data files)
 dotnet run --project program -- measurements-10000000.txt
 
+# AOT compilation for ultimate performance
+dotnet publish program -c Release -r linux-x64 -p:PublishAot=true -p:StripSymbols=true -p:SelfContained=true
+
+# Run AOT-compiled executable
+./program/bin/Release/net9.0/linux-x64/publish/1brc measurements-10000000.txt
+
 # Run benchmarks with 10 million row dataset (default)
 dotnet run --project benchmark -c Release
 
 # Run benchmarks with 1 billion row dataset
 dotnet run --project benchmark -c Release -- large
+
+# Run tests to verify correctness
+dotnet test
+
+# Run tests with detailed output
+dotnet test --verbosity normal
 ```
 
 ## Architecture
@@ -37,6 +52,7 @@ dotnet run --project benchmark -c Release -- large
 
 - **program/program.cs**: Main entry point containing the `OneBrc` class with high-performance file processing logic
 - **benchmark/bench.cs**: BenchmarkDotNet setup for performance measurement using configurable worker counts
+- **tests/**: xUnit test project with unit tests and integration tests to verify correctness
 
 ### Key Performance Optimizations
 
@@ -99,10 +115,25 @@ Palembang;38.8
 
 ## Performance Tuning
 
-- Default worker count is `Environment.ProcessorCount`
-- Benchmark tests both `ProcessorCount` and `ProcessorCount * 2` workers
-- Server GC is enabled in the main program project for better throughput
-- Block size for file reading is configurable (default 1MB)
+- **Worker Count**: Default is `Environment.ProcessorCount`, can be overridden via command line
+- **Benchmark Configurations**: Tests both `ProcessorCount` and `ProcessorCount * 2` workers
+- **Memory Optimizations**: Server GC enabled, ArrayPool for buffer reuse, block size 32MB for file reading
+- **AOT Benefits**: Faster startup, smaller memory footprint, predictable performance, native code optimization
+
+## Project Configuration
+
+### Solution Structure
+- **1brc.sln**: Visual Studio solution file with three projects
+- **program/**: Main executable with performance-optimized project settings
+- **benchmark/**: BenchmarkDotNet project for precise performance measurement
+- **tests/**: xUnit test project for verifying correctness of the implementation
+
+### Main Project Optimizations (program.csproj)
+- **ServerGarbageCollection**: Enabled for better throughput on large datasets
+- **TieredPGO**: Profile-guided optimization for better JIT quality
+- **OptimizationPreference**: Speed-focused optimizations
+- **InvariantGlobalization**: Reduces AOT size by removing globalization support
+- **PublishAot**: Can be enabled at publish time for native compilation
 
 ## Dependencies
 
@@ -112,19 +143,56 @@ Palembang;38.8
 
 ## Key Implementation Details
 
-### StationPool Class
-The `StationPool` class (`program/program.cs:254-299`) implements a hash-based UTF-8 byte lookup system that eliminates per-line string allocations. Each worker thread maintains its own pool, using FNV-1a hashing with collision handling via bucket lists.
+### StationPool Class (lines 297-354)
+The `StationPool` class implements a hash-based UTF-8 byte lookup system that eliminates per-line string allocations. Each worker thread maintains its own pool using ThreadStatic, using FNV-1a hashing with collision handling via bucket lists. Includes ASCII fast path optimization for common station names.
 
-### Stats Struct
-The `Stats` struct (`program/program.cs:222-242`) stores temperature statistics as integers (tenths) to avoid floating-point arithmetic. Uses aggressive inlining for performance-critical operations.
+### Stats Struct (lines 244-264)
+The `Stats` struct stores temperature statistics as integers (tenths) to avoid floating-point arithmetic. Uses aggressive inlining for performance-critical operations and includes merge functionality for parallel aggregation.
 
-### File Chunking Strategy
-The `MakeRanges` method divides files into equal-sized chunks for parallel processing, with chunk boundaries aligned to line endings to ensure complete records are processed by single workers.
+### File Processing Architecture
+- **MakeRanges** (lines 93-107): Divides files into equal-sized chunks for parallel processing
+- **ProcessRange** (lines 109-175): Reads file chunks with line boundary handling using ArrayPool for buffer management
+- **ParseLineOnce** (lines 189-208): Single-pass parsing with station name interning and temperature parsing
 
 ## Development Workflow
 
 When modifying the core processing logic:
-1. Run benchmarks before changes: `dotnet run --project benchmark -c Release`
-2. Make targeted changes to maintain performance characteristics
-3. Verify results with smaller dataset: `dotnet run --project program -- measurements-10000000.txt`
-4. Run full benchmarks to validate performance improvements
+1. Run tests to ensure correctness: `dotnet test`
+2. Run benchmarks before changes: `dotnet run --project benchmark -c Release`
+3. Make targeted changes to maintain performance characteristics
+4. Verify results with smaller dataset: `dotnet run --project program -- measurements-10000000.txt`
+5. Re-run tests to verify correctness is maintained: `dotnet test`
+6. Run full benchmarks to validate performance improvements
+
+## Testing
+
+The test suite includes comprehensive unit and integration tests to verify correctness:
+
+### Unit Tests
+- **ParseTempTenths**: Tests temperature parsing with various formats and edge cases including rounding
+- **ParseLineOnce**: Tests line parsing and aggregation logic
+- **MakeRanges**: Tests file chunking logic for parallel processing
+- **FormatTenth**: Tests output formatting
+- **StationPool**: Tests string interning and station name handling
+- **Stats.Merge**: Tests statistics aggregation across workers
+
+### Integration Tests
+- **ProcessFile with sample data**: Tests end-to-end processing with known expected output
+- **Multi-worker consistency**: Verifies same results regardless of worker count
+- **Edge cases**: Tests boundary conditions and rounding behavior
+- **Real data subset**: Optional test with actual measurement data if available
+
+### Running Tests
+```bash
+# Run all tests
+dotnet test
+
+# Run with detailed output
+dotnet test --verbosity normal
+
+# Run specific test class
+dotnet test --filter "FullyQualifiedName~OneBrcTests"
+
+# Run integration tests only
+dotnet test --filter "FullyQualifiedName~IntegrationTests"
+```
