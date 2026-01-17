@@ -45,7 +45,7 @@ public class IntegrationTests
 
     // Remove curly braces and split by comma regardless of spaces
     var entries = output.Trim('{', '}')
-                        .Split(',', System.StringSplitOptions.RemoveEmptyEntries)
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries)
                         .Select(x => x.Trim());
 
     var actual = entries.FirstOrDefault(x => x.StartsWith(city + "="));
@@ -58,8 +58,8 @@ public class IntegrationTests
   {
     var testDataPath = Path.Combine(GetTestDirectory(), "sample-data.txt");
 
-    var (output1, count1) = OneBrc.ProcessFile(testDataPath, 1);
-    var (output2, count2) = OneBrc.ProcessFile(testDataPath, 2);
+    var (output1, _) = OneBrc.ProcessFile(testDataPath, 1);
+    var (output2, _) = OneBrc.ProcessFile(testDataPath, 2);
 
     // For very small files, worker boundary handling might cause slight differences
     // This is expected behavior for the challenge algorithm when applied to tiny test files
@@ -142,6 +142,78 @@ public class IntegrationTests
       // Skip test if real data is not available
       Assert.True(true, "Real measurement data not available, skipping test");
     }
+  }
+
+  [Fact]
+  public void ProcessFile_10MillionRows_ShouldProduceCorrectOutput()
+  {
+    // Test with full 10 million row dataset if available
+    var dataPath = Path.Combine(GetProjectRoot(), "measurements-10000000.txt");
+
+    if (!File.Exists(dataPath))
+    {
+      // Skip test if data is not available
+      Assert.True(true, "10 million row dataset not available, skipping test");
+      return;
+    }
+
+    var (output, count) = OneBrc.ProcessFile(dataPath, 6);
+
+    // Verify line count
+    Assert.Equal(10_000_000, count);
+
+    // Verify output format
+    Assert.StartsWith("{", output);
+    Assert.EndsWith("}", output);
+
+    // Verify specific city statistics from known expected output
+    // These values are from the verified AOT run
+    AssertCity(output, "Abha", "-21.7/18.0/56.8");
+    AssertCity(output, "Abidjan", "-12.4/25.9/64.2");
+    AssertCity(output, "Amsterdam", "-30.1/10.1/48.9");
+    AssertCity(output, "Baghdad", "-22.0/22.7/63.6");
+    AssertCity(output, "Bangkok", "-8.5/28.6/75.7");
+    AssertCity(output, "Berlin", "-35.1/10.4/50.8");
+    AssertCity(output, "Cairo", "-24.9/21.5/60.6");
+    AssertCity(output, "Chicago", "-35.9/9.8/52.7");
+    AssertCity(output, "Dubai", "-14.8/27.0/64.8");
+    AssertCity(output, "Hamburg", "-34.9/9.7/51.5");
+    AssertCity(output, "Hong Kong", "-16.8/23.4/65.7");
+    AssertCity(output, "London", "-31.0/11.4/50.8");
+    AssertCity(output, "Los Angeles", "-21.9/18.7/65.2");
+    AssertCity(output, "Mumbai", "-12.2/27.1/62.1");
+    AssertCity(output, "New York City", "-27.1/12.9/54.8");
+    AssertCity(output, "Paris", "-31.2/12.3/58.0");
+    AssertCity(output, "Singapore", "-14.5/27.1/68.4");
+    AssertCity(output, "Sydney", "-24.2/17.7/58.7");
+    AssertCity(output, "Tokyo", "-24.1/15.4/54.7");
+    AssertCity(output, "Zürich", "-31.6/9.3/50.0");
+  }
+
+  [Fact]
+  public void ProcessFile_10MillionRows_DifferentWorkerCounts_ShouldProduceSameOutput()
+  {
+    // Test that different worker counts produce identical results
+    var dataPath = Path.Combine(GetProjectRoot(), "measurements-10000000.txt");
+
+    if (!File.Exists(dataPath))
+    {
+      Assert.True(true, "10 million row dataset not available, skipping test");
+      return;
+    }
+
+    var (output1, count1) = OneBrc.ProcessFile(dataPath, 1);
+    var (output3, count3) = OneBrc.ProcessFile(dataPath, 3);
+    var (output6, count6) = OneBrc.ProcessFile(dataPath, 6);
+
+    // All worker counts should produce same line count
+    Assert.Equal(10_000_000, count1);
+    Assert.Equal(10_000_000, count3);
+    Assert.Equal(10_000_000, count6);
+
+    // All worker counts should produce identical output
+    Assert.Equal(output1, output3);
+    Assert.Equal(output1, output6);
   }
 
   private static string GetTestDirectory()
