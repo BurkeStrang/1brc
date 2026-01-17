@@ -31,13 +31,14 @@ dotnet run --project program -- measurements-10000000.txt
 dotnet publish program -c Release -r linux-x64 -p:PublishAot=true -p:StripSymbols=true -p:SelfContained=true
 
 # Run AOT-compiled executable
-./program/bin/Release/net9.0/linux-x64/publish/1brc measurements-10000000.txt
+./program/bin/Release/net10.0/linux-x64/publish/1brc measurements-10000000.txt
 
 # Run benchmarks with 10 million row dataset (default)
 dotnet run --project benchmark -c Release
 
-# Run benchmarks with 1 billion row dataset
-dotnet run --project benchmark -c Release -- large
+# Run benchmarks with 1 billion row dataset (build first, then run directly)
+dotnet build benchmark -c Release
+sudo dotnet benchmark/bin/Release/net10.0/benchmark.dll large
 
 # Run tests to verify correctness
 dotnet test
@@ -50,7 +51,7 @@ dotnet test --verbosity normal
 
 ### Core Components
 
-- **program/program.cs**: Main entry point containing the `OneBrc` class with high-performance file processing logic
+- **program/program.cs**: Contains `OneBrc` class (file processing) and `StationMap` class (hash table for aggregation)
 - **benchmark/bench.cs**: BenchmarkDotNet setup for performance measurement using configurable worker counts
 - **tests/**: xUnit test project with unit tests and integration tests to verify correctness
 
@@ -58,20 +59,21 @@ dotnet test --verbosity normal
 
 The `OneBrc.ProcessFile` method implements several performance optimizations:
 
-1. **Parallel Processing**: Uses `Parallel.ForEach` with configurable worker threads to process file chunks concurrently
-2. **Memory-Mapped File Access**: Uses `RandomAccess` APIs for efficient file reading without loading entire file into memory
-3. **String Interning**: Per-worker string pools to avoid repeated UTF-8 decoding of station names
-4. **Fixed-Point Arithmetic**: Temperatures stored as tenths (integers) to avoid floating-point operations
-5. **ArrayPool**: Reuses byte buffers to minimize garbage collection
-6. **Unsafe Operations**: Uses `CollectionsMarshal.GetValueRefOrAddDefault` for efficient dictionary operations
+1. **Memory-Mapped Files**: Uses `MemoryMappedFile` with unsafe pointers for zero-copy file access
+2. **Parallel Processing**: Uses `Parallel.For` with configurable worker threads to process file chunks concurrently
+3. **Fixed-Offset Semicolon Detection**: Exploits known temperature format (3-5 chars) to find semicolons without scanning
+4. **SIMD Newline Search**: Uses .NET's SIMD-optimized `IndexOf` for finding line boundaries
+5. **Custom Hash Table**: `StationMap` with open addressing and xxHash-style mixing using `MemoryMarshal.Read`
+6. **Fixed-Point Arithmetic**: Temperatures stored as tenths (integers) to avoid floating-point operations
 
 ### File Processing Flow
 
-1. **Range Calculation**: `MakeRanges` divides the file into equal chunks for parallel processing
-2. **Chunk Processing**: `ProcessRange` reads file chunks with line boundary handling
-3. **Line Parsing**: `ParseLine` extracts station names and temperatures from semicolon-delimited format
-4. **Aggregation**: Results merged from all workers using `Stats.Merge`
-5. **Output Formatting**: Sorted alphabetically with temperatures formatted to one decimal place
+1. **Memory Mapping**: `ProcessFile` maps the entire file into memory using `MemoryMappedFile`
+2. **Range Calculation**: `MakeRanges` divides the file into equal chunks aligned to newline boundaries
+3. **Chunk Processing**: `ProcessRange` processes each chunk, finding lines and parsing them
+4. **Line Parsing**: Uses SIMD `IndexOf` for newlines, fixed-offset checks for semicolons, branchless temp parsing
+5. **Aggregation**: Results merged from all worker `StationMap`s into the first map
+6. **Output Formatting**: Sorted alphabetically with temperatures formatted to one decimal place
 
 ## Testing Data
 
@@ -137,22 +139,25 @@ Palembang;38.8
 
 ## Dependencies
 
-- **.NET 9.0**: Target framework
+- **.NET 10.0**: Target framework
 - **BenchmarkDotNet 0.15.3**: Performance measurement framework (benchmark project only)
 - **7-Zip**: Required for extracting measurement data files
 
 ## Key Implementation Details
 
-### StationPool Class (lines 297-354)
-The `StationPool` class implements a hash-based UTF-8 byte lookup system that eliminates per-line string allocations. Each worker thread maintains its own pool using ThreadStatic, using FNV-1a hashing with collision handling via bucket lists. Includes ASCII fast path optimization for common station names.
+### StationMap Class (lines 202-380)
+Custom open-addressing hash table optimized for the ~400 unique station names in the dataset:
+- **Initial capacity**: 65536 entries with 0.5 load factor to minimize collisions
+- **Hash function**: xxHash-style mixing using `MemoryMarshal.Read<ulong>` for efficient byte reading
+- **Collision resolution**: Linear probing with hash + length + SequenceEqual comparison
+- **Entry struct**: Stores Key (byte[]), Hash, Min, Max, Sum, Count
 
-### Stats Struct (lines 244-264)
-The `Stats` struct stores temperature statistics as integers (tenths) to avoid floating-point arithmetic. Uses aggressive inlining for performance-critical operations and includes merge functionality for parallel aggregation.
-
-### File Processing Architecture
-- **MakeRanges** (lines 93-107): Divides files into equal-sized chunks for parallel processing
-- **ProcessRange** (lines 109-175): Reads file chunks with line boundary handling using ArrayPool for buffer management
-- **ParseLineOnce** (lines 189-208): Single-pass parsing with station name interning and temperature parsing
+### Key Methods in OneBrc Class
+- **ProcessFile** (lines 34-55): Entry point that memory-maps the file and acquires unsafe pointer
+- **MakeRanges** (lines 80-105): Divides file into equal chunks aligned to newline boundaries
+- **ProcessRange** (lines 107-135): Main processing loop using SIMD IndexOf for newlines and fixed-offset semicolon detection
+- **ParseTempBranchless** (lines 150-173): Branchless temperature parsing returning tenths as integer
+- **FindByte** (lines 137-145): Wrapper around SIMD-optimized span.IndexOf
 
 ## Development Workflow
 
@@ -168,15 +173,13 @@ When modifying the core processing logic:
 
 The test suite includes comprehensive unit and integration tests to verify correctness:
 
-### Unit Tests
-- **ParseTempTenths**: Tests temperature parsing with various formats and edge cases including rounding
-- **ParseLineOnce**: Tests line parsing and aggregation logic
-- **MakeRanges**: Tests file chunking logic for parallel processing
-- **FormatTenth**: Tests output formatting
-- **StationPool**: Tests string interning and station name handling
-- **Stats.Merge**: Tests statistics aggregation across workers
+### Unit Tests (OneBrcTests.cs)
+- **ParseTempBranchless**: Tests temperature parsing with various formats (positive, negative, single/double digit)
+- **FormatTenth**: Tests output formatting for temperature display
+- **ComputeHash**: Tests hash function distribution and collision handling
+- **StationMap**: Tests hash table operations (add, update, merge)
 
-### Integration Tests
+### Integration Tests (IntegrationTests.cs)
 - **ProcessFile with sample data**: Tests end-to-end processing with known expected output
 - **Multi-worker consistency**: Verifies same results regardless of worker count
 - **Edge cases**: Tests boundary conditions and rounding behavior

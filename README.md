@@ -27,19 +27,19 @@ Output format: `{<station_name>=<min>/<mean>/<max>, ...}`
 
 This implementation achieves high performance through several optimizations:
 
-- **Parallel Processing**: Splits file into chunks processed by multiple worker threads
-- **Memory-Mapped I/O**: Uses `RandomAccess` APIs for efficient file reading
-- **Hash-Based Station Lookup**: UTF-8 byte hashing with string interning eliminates per-line string allocations
+- **Parallel Processing**: Splits file into chunks processed by multiple worker threads using `Parallel.For`
+- **Memory-Mapped I/O**: Uses `MemoryMappedFile` with unsafe pointers for zero-copy file access
+- **Custom Hash Table**: Open-addressing hash table with xxHash-style mixing for fast station lookups
+- **Fixed-Offset Parsing**: Exploits known temperature format (3-5 chars) to find semicolons without scanning
 - **Fixed-Point Arithmetic**: Processes temperatures as integers (tenths) to avoid floating-point operations
-- **Zero-Copy Parsing**: Parses directly from byte spans without intermediate string allocations
-- **Efficient Aggregation**: Uses `CollectionsMarshal` for high-performance dictionary operations
+- **SIMD Newline Search**: Uses .NET's SIMD-optimized `IndexOf` for finding line boundaries
 - **AOT Compilation**: Native ahead-of-time compilation eliminates JIT overhead and reduces startup time
 
 ## Getting Started
 
 ### Prerequisites
 
-- .NET 9.0 SDK
+- .NET 10.0 SDK
 - 7-Zip (for extracting measurement data files)
 
 ### Initial Setup
@@ -93,7 +93,7 @@ dotnet run --project program -- path/to/measurements.csv 16
 dotnet run --project program -c Release -- path/to/measurements.csv
 
 # Run AOT-compiled executable (after publishing)
-./program/bin/Release/net9.0/linux-x64/publish/1brc path/to/measurements.csv
+./program/bin/Release/net10.0/linux-x64/publish/1brc path/to/measurements.csv
 ```
 
 ### Benchmarking
@@ -104,84 +104,80 @@ The project includes BenchmarkDotNet integration for precise performance measure
 # Run benchmarks with 10 million row dataset (default)
 dotnet run --project benchmark -c Release
 
-# Run benchmarks with 1 billion row dataset
-dotnet run --project benchmark -- large
-
-# For release benchmarks with 1 billion dataset, build first then run
+# Run benchmarks with 1 billion row dataset (build first for accurate results)
 dotnet build benchmark -c Release
-dotnet benchmark/bin/Release/net9.0/benchmark.dll large
+sudo dotnet benchmark/bin/Release/net10.0/benchmark.dll large
 ```
 
-The benchmark tests different worker configurations and provides detailed performance metrics including:
-- Execution time
-- Memory allocation
-- Throughput (lines/second and MiB/second)
+The benchmark tests different worker configurations (ProcessorCount/2 and ProcessorCount) and provides detailed performance metrics including execution time, memory allocation, and GC statistics.
 
 ### Performance Results
 
-On a 12th Gen Intel Core i7-1265U:
-
-**10 Million Rows Dataset:**
+**1 Billion Rows Dataset (13GB):**
 | Workers | Execution Time | Throughput | Memory Allocated |
 |---------|----------------|------------|------------------|
-| 6       | 414-437 ms     | 22.9-24.2M lines/s | 6.11 MB         |
-| 12      | 436-440 ms     | 22.7-22.9M lines/s | 8.98 MB         |
+| 6       | ~24 s          | ~41M lines/s | ~12 MB          |
+| 12      | ~30 s          | ~33M lines/s | ~24 MB          |
 
-**1 Billion Rows Dataset:**
-| Workers | Execution Time | Throughput | Memory Allocated |
-|---------|----------------|------------|------------------|
-| 6       | 57.11 s        | 17.5M lines/s | 6.11 MB          |
-| 12      | 55.11 s        | 18.1M lines/s | 6.98 MB          |
-
-**Key Achievement**: 98%+ reduction in memory allocations through hash-based UTF-8 byte lookup for station names, eliminating unnecessary string creation on every line.
+**Key Optimizations Applied:**
+- Fixed-offset semicolon detection (temperature is always 3-5 chars)
+- xxHash-style hash function with `MemoryMarshal.Read` for efficient byte reading
+- Custom open-addressing hash table tuned for ~400 unique station names
 
 ## Project Structure
 
 ```
-├── 1brc.sln                    # Visual Studio solution file
+├── 1brc.slnx                   # Visual Studio solution file
 ├── program/
 │   ├── program.csproj          # Main executable project
-│   └── program.cs              # Core processing logic
+│   └── program.cs              # Core processing logic (OneBrc + StationMap)
 ├── benchmark/
 │   ├── benchmark.csproj        # BenchmarkDotNet project
 │   └── bench.cs                # Performance benchmarks
+├── tests/
+│   ├── tests.csproj            # xUnit test project
+│   ├── OneBrcTests.cs          # Unit tests
+│   └── IntegrationTests.cs     # Integration tests
 └── BenchmarkDotNet.Artifacts/  # Benchmark results and logs
 ```
 
 ## How It Works
 
-### 1. File Chunking
-The file is divided into approximately equal chunks, with each chunk assigned to a worker thread. Chunk boundaries are adjusted to align with line endings to ensure complete records.
+### 1. Memory-Mapped File Access
+The file is memory-mapped using `MemoryMappedFile`, providing a direct pointer to the file contents without explicit I/O calls. This lets the OS handle paging efficiently.
 
-### 2. Parallel Processing
-Each worker processes its chunk independently:
-- Reads data in blocks using `RandomAccess.Read`
-- Handles partial lines at chunk boundaries
-- Maintains a local dictionary of station statistics
+### 2. File Chunking
+`MakeRanges` divides the file into equal chunks for parallel processing. Chunk boundaries are adjusted to align with newline characters to ensure complete records.
 
-### 3. Line Parsing
+### 3. Parallel Processing
+Each worker processes its chunk independently using `Parallel.For`:
+- Scans for newlines using SIMD-optimized `IndexOf`
+- Uses fixed-offset checks to find semicolons (temperature is always 3-5 chars from newline)
+- Maintains a local `StationMap` hash table for station statistics
+
+### 4. Line Parsing
 For each line:
-- Finds the semicolon separator
-- Extracts station name (UTF-8 decoded and interned)
-- Parses temperature as fixed-point integer (avoiding floating-point)
+- Finds newline with `span.IndexOf('\n')` (SIMD accelerated)
+- Checks offsets -4, -5, -6 from newline to find semicolon
+- Parses temperature as fixed-point integer using branchless arithmetic
 
-### 4. Statistics Aggregation
-Each worker maintains running statistics (min, max, sum, count) per station. After all workers complete, their results are merged into a final dictionary.
+### 5. Statistics Aggregation
+Each `StationMap` maintains running statistics (min, max, sum, count) per station. After all workers complete, maps are merged sequentially into the first worker's map.
 
-### 5. Output Formatting
-Results are sorted alphabetically by station name and formatted as the required output string.
+### 6. Output Formatting
+Results are sorted alphabetically by station name and formatted as the required output string with temperatures displayed to one decimal place.
 
 ## Performance Tuning
 
 ### Worker Count
 - Default: `Environment.ProcessorCount`
-- Can be overridden via command line
-- Optimal count depends on file size and system characteristics
+- Can be overridden via command line argument
+- **Fewer workers often perform better** due to memory bandwidth saturation (6 workers outperforms 12 on many systems)
 
 ### Memory Settings
 - Server GC enabled for better throughput on large datasets
-- ArrayPool used for buffer reuse
-- Configurable block size (default: 1MB)
+- Hash table sized at 65536 entries with 0.5 load factor
+- Memory-mapped files let the OS manage page caching
 
 ### Temperature Parsing
 Temperatures are parsed as integers representing tenths of degrees:
@@ -197,7 +193,7 @@ This avoids floating-point arithmetic and maintains precision for the required o
 dotnet run --project program -c Release -- measurements-1b.txt
 
 # Process with AOT-compiled executable for maximum performance
-./program/bin/Release/net9.0/linux-x64/publish/1brc measurements-1b.txt
+./program/bin/Release/net10.0/linux-x64/publish/1brc measurements-1b.txt
 
 # Output:
 # {Abha=-31.1/18.0/66.5, Abidjan=-25.9/26.0/67.0, ...}

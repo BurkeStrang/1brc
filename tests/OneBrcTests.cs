@@ -7,42 +7,18 @@ namespace tests;
 public class OneBrcTests
 {
   [Theory]
-  [InlineData("12.3", 123)]
-  [InlineData("-5.7", -57)]
+  [InlineData("1.2", 12)]
+  [InlineData("-3.4", -34)]
   [InlineData("0.0", 0)]
   [InlineData("99.9", 999)]
   [InlineData("-99.9", -999)]
-  [InlineData("12.35", 124)] // Test rounding up
-  [InlineData("12.34", 123)] // Test rounding down
-  [InlineData("-12.35", -124)] // Test negative rounding
-  [InlineData("12", 120)] // Test whole number
-  [InlineData("-12", -120)] // Test negative whole number
-  public void ParseTempTenths_ShouldParseCorrectly(string input, int expected)
+  [InlineData("12.3", 123)]
+  [InlineData("-45.6", -456)]
+  public void ParseTempBranchless_ShouldParseCorrectly(string input, int expected)
   {
     var bytes = Encoding.UTF8.GetBytes(input);
-    var result = OneBrc.ParseTempTenths(bytes);
+    var result = OneBrc.ParseTempBranchless(bytes);
     Assert.Equal(expected, result);
-  }
-
-  [Fact]
-  public void MakeRanges_ShouldCreateCorrectRanges()
-  {
-    var ranges = OneBrc.MakeRanges(1000, 4);
-
-    Assert.Equal(4, ranges.Length);
-    Assert.Equal((0L, 250L), ranges[0]);
-    Assert.Equal((250L, 500L), ranges[1]);
-    Assert.Equal((500L, 750L), ranges[2]);
-    Assert.Equal((750L, 1000L), ranges[3]);
-  }
-
-  [Fact]
-  public void MakeRanges_SingleWorker_ShouldReturnSingleRange()
-  {
-    var ranges = OneBrc.MakeRanges(1000, 1);
-
-    Assert.Single(ranges);
-    Assert.Equal((0L, 1000L), ranges[0]);
   }
 
   [Fact]
@@ -56,46 +32,55 @@ public class OneBrcTests
   }
 
   [Fact]
-  public void StationPool_ShouldInternSameStation()
+  public void StationMap_ShouldAggregateCorrectly()
   {
-    var pool = OneBrc.StationPool.TlsGetOrCreate();
-    var utf8 = Encoding.UTF8;
+    var map = new StationMap();
 
-    var station1 = pool.GetStation("Hamburg"u8, utf8);
-    var station2 = pool.GetStation("Hamburg"u8, utf8);
+    map.AddMeasurement("Hamburg"u8, 100);
+    map.AddMeasurement("Hamburg"u8, 200);
+    map.AddMeasurement("Berlin"u8, 50);
+    map.AddMeasurement("Berlin"u8, 300);
 
-    Assert.Same(station1, station2); // Should be the same reference
-    Assert.Equal("Hamburg", station1);
+    var (output, count) = map.FormatOutput();
+
+    Assert.Equal(4, count);
+    Assert.Contains("Berlin=", output);
+    Assert.Contains("Hamburg=", output);
   }
 
   [Fact]
-  public void StationPool_ShouldHandleDifferentStations()
+  public void StationMap_Merge_ShouldCombineCorrectly()
   {
-    var pool = OneBrc.StationPool.TlsGetOrCreate();
-    var utf8 = Encoding.UTF8;
+    var map1 = new StationMap();
+    map1.AddMeasurement("Hamburg"u8, 100);
+    map1.AddMeasurement("Hamburg"u8, 200);
 
-    var station1 = pool.GetStation("Hamburg"u8, utf8);
-    var station2 = pool.GetStation("Berlin"u8, utf8);
+    var map2 = new StationMap();
+    map2.AddMeasurement("Hamburg"u8, 50);
+    map2.AddMeasurement("Hamburg"u8, 300);
 
-    Assert.NotSame(station1, station2);
-    Assert.Equal("Hamburg", station1);
-    Assert.Equal("Berlin", station2);
+    map1.Merge(map2);
+
+    var (output, count) = map1.FormatOutput();
+
+    Assert.Equal(4, count);
+    // Min=50, Max=300, Avg=(100+200+50+300)/4 = 162.5 -> rounds to 163 -> 16.3
+    Assert.Contains("Hamburg=5.0/16.3/30.0", output);
   }
 
   [Fact]
-  public void Stats_Merge_ShouldCombineCorrectly()
+  public void StationMap_ShouldHandleManyStations()
   {
-    var stats1 = new OneBrc.Stats(100); // Min=100, Max=100, Sum=100, Count=1
-    stats1.Add(200); // Min=100, Max=200, Sum=300, Count=2
+    var map = new StationMap();
 
-    var stats2 = new OneBrc.Stats(50); // Min=50, Max=50, Sum=50, Count=1
-    stats2.Add(300); // Min=50, Max=300, Sum=350, Count=2
+    // Add many different stations to test resizing
+    for (int i = 0; i < 1000; i++)
+    {
+      var stationBytes = Encoding.UTF8.GetBytes($"Station{i}");
+      map.AddMeasurement(stationBytes, i);
+    }
 
-    stats1.Merge(stats2);
-
-    Assert.Equal(50, stats1.Min);
-    Assert.Equal(300, stats1.Max);
-    Assert.Equal(650, stats1.Sum);
-    Assert.Equal(4, stats1.Count);
+    var (_, count) = map.FormatOutput();
+    Assert.Equal(1000, count);
   }
 }

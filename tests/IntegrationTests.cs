@@ -21,10 +21,14 @@ public class IntegrationTests
     Assert.StartsWith("{", output);
     Assert.EndsWith("}", output);
 
-    // Check key stations with expected values (rounded to tenths)
+    // Check key stations with expected values based on sample-data.txt
+    // Hamburg: 12.0, -2.3, -7.3, 23.1 -> min=-7.3, avg=6.4, max=23.1
+    // Istanbul: 6.2, 23.0 -> min=6.2, avg=14.6, max=23.0
+    // Palembang: 38.8, 35.6 -> min=35.6, avg=37.2, max=38.8
+    // Roseau: 34.4, 31.8 -> min=31.8, avg=33.1, max=34.4
     AssertCity(output, "Bridgetown", "26.9/26.9/26.9");
     AssertCity(output, "St. John's", "15.2/15.2/15.2");
-    AssertCity(output, "Hamburg", "-7.3/0.8/12.0");
+    AssertCity(output, "Hamburg", "-7.3/6.4/23.1");
     AssertCity(output, "Istanbul", "6.2/14.6/23.0");
     AssertCity(output, "Palembang", "35.6/37.2/38.8");
     AssertCity(output, "Roseau", "31.8/33.1/34.4");
@@ -76,6 +80,7 @@ public class IntegrationTests
   public void ProcessFile_EdgeCases_ShouldHandleCorrectly()
   {
     // Create a temporary file with edge cases
+    // Note: 1BRC spec uses exactly one decimal place
     var tempFile = Path.GetTempFileName();
     try
     {
@@ -84,15 +89,14 @@ public class IntegrationTests
           "B;-0.1\n" +
           "C;99.9\n" +
           "D;-99.9\n" +
-          "E;12.34\n" +  // Should round to 12.3
-          "E;12.35\n");  // Should round to 12.4
+          "E;12.3\n" +
+          "E;12.4\n");
 
       var (output, count) = OneBrc.ProcessFile(tempFile, 1);
 
       Assert.Equal(6, count);
 
-      // E should have: 12.34 (rounds to 123 tenths), 12.35 (rounds to 124 tenths)
-      // min=123, max=124, mean=(123+124)/2=123.5 rounds to 124
+      // E: min=12.3, max=12.4, avg=(123+124)/2=123.5 rounds to 124 -> 12.4
       Assert.Contains("A=0.0/0.0/0.0", output);
       Assert.Contains("B=-0.1/-0.1/-0.1", output);
       Assert.Contains("C=99.9/99.9/99.9", output);
@@ -149,7 +153,7 @@ public class IntegrationTests
   private static string GetProjectRoot()
   {
     var dir = new DirectoryInfo(GetTestDirectory());
-    while (dir != null && !File.Exists(Path.Combine(dir.FullName, "1brc.sln")))
+    while (dir != null && !File.Exists(Path.Combine(dir.FullName, "1brc.slnx")))
     {
       dir = dir.Parent;
     }
