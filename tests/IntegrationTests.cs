@@ -12,10 +12,7 @@ public class IntegrationTests
     var testDataPath = Path.Combine(GetTestDirectory(), "sample-data.txt");
 
     // Process the file
-    var (output, totalCount) = OneBrc.ProcessFile(testDataPath, 1);
-
-    // Verify we get some reasonable line count (file boundary handling can affect this)
-    Assert.True(totalCount >= 6 && totalCount <= 15);
+    var output = OneBrc.ProcessFile(testDataPath, 1);
 
     // Verify the output format is correct
     Assert.StartsWith("{", output);
@@ -58,11 +55,9 @@ public class IntegrationTests
   {
     var testDataPath = Path.Combine(GetTestDirectory(), "sample-data.txt");
 
-    var (output1, _) = OneBrc.ProcessFile(testDataPath, 1);
-    var (output2, _) = OneBrc.ProcessFile(testDataPath, 2);
+    var output1 = OneBrc.ProcessFile(testDataPath, 1);
+    var output2 = OneBrc.ProcessFile(testDataPath, 2);
 
-    // For very small files, worker boundary handling might cause slight differences
-    // This is expected behavior for the challenge algorithm when applied to tiny test files
     // Both outputs should still be well-formed
     Assert.StartsWith("{", output1);
     Assert.EndsWith("}", output1);
@@ -92,9 +87,7 @@ public class IntegrationTests
           "E;12.3\n" +
           "E;12.4\n");
 
-      var (output, count) = OneBrc.ProcessFile(tempFile, 1);
-
-      Assert.Equal(6, count);
+      var output = OneBrc.ProcessFile(tempFile, 1);
 
       // E: min=12.3, max=12.4, avg=(123+124)/2=123.5 rounds to 124 -> 12.4
       Assert.Contains("A=0.0/0.0/0.0", output);
@@ -124,9 +117,8 @@ public class IntegrationTests
         var lines = File.ReadLines(realDataPath).Take(1000);
         File.WriteAllLines(tempFile, lines);
 
-        var (output, count) = OneBrc.ProcessFile(tempFile, 2);
+        var output = OneBrc.ProcessFile(tempFile, 2);
 
-        Assert.True(count >= 990 && count <= 1000); // Allow for line boundary handling
         Assert.StartsWith("{", output);
         Assert.EndsWith("}", output);
         Assert.Contains("=", output);
@@ -157,10 +149,7 @@ public class IntegrationTests
       return;
     }
 
-    var (output, count) = OneBrc.ProcessFile(dataPath, 6);
-
-    // Verify line count
-    Assert.Equal(10_000_000, count);
+    var output = OneBrc.ProcessFile(dataPath, 6);
 
     // Verify output format
     Assert.StartsWith("{", output);
@@ -202,18 +191,14 @@ public class IntegrationTests
       return;
     }
 
-    var (output1, count1) = OneBrc.ProcessFile(dataPath, 1);
-    var (output3, count3) = OneBrc.ProcessFile(dataPath, 3);
-    var (output6, count6) = OneBrc.ProcessFile(dataPath, 6);
-
-    // All worker counts should produce same line count
-    Assert.Equal(10_000_000, count1);
-    Assert.Equal(10_000_000, count3);
-    Assert.Equal(10_000_000, count6);
+    var output1 = OneBrc.ProcessFile(dataPath, 1);
+    var output3 = OneBrc.ProcessFile(dataPath, 3);
+    var output6 = OneBrc.ProcessFile(dataPath, 6);
 
     // All worker counts should produce identical output
     Assert.Equal(output1, output3);
     Assert.Equal(output1, output6);
+
   }
 
   private static string GetTestDirectory()

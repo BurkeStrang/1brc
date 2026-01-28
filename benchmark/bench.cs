@@ -83,7 +83,7 @@ public class SmallBench : BenchBase
   public int Workers { get; set; }
 
   [Benchmark(Description = "Parse+Aggregate 10M")]
-  public (string Output, long Count) Run() => OneBrc.ProcessFile(_fullPath!, Workers);
+  public string Run() => OneBrc.ProcessFile(_fullPath!, Workers);
 }
 
 [MemoryDiagnoser]
@@ -110,11 +110,11 @@ public class LargeBench : BenchBase
       throw new FileNotFoundException($"Benchmark data file not found: {_fullPath}");
   }
 
-  [ParamsSource(nameof(WorkerOptions))]
-  public int Workers { get; set; }
+  // Fixed at 6 workers (optimal for most systems)
+  public int Workers { get; set; } = 6;
 
   [Benchmark(Description = "Parse+Aggregate 1B")]
-  public (string Output, long Count) Run() => OneBrc.ProcessFile(_fullPath!, Workers);
+  public string Run() => OneBrc.ProcessFile(_fullPath!, Workers);
 }
 
 public static class ProgramBench
