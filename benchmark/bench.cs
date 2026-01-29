@@ -90,8 +90,8 @@ public class SmallBench : BenchBase
 
 [MemoryDiagnoser]
 [GcServer(true)]
-[WarmupCount(0)]     // Skip warmup for huge file
-[IterationCount(1)]  // Single iteration for 1B rows
+[WarmupCount(0)]
+[IterationCount(1)]
 [SimpleJob(RuntimeMoniker.Net10_0)]
 [Config(typeof(LargeBenchConfig))]
 public class LargeBench : BenchBase

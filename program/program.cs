@@ -189,7 +189,7 @@ public static class OneBrc
         byte* buffer,
         nint bufferLength)
     {
-        const ulong C = 11400714819323198485UL;
+        const ulong c = 11400714819323198485UL;
 
         nint index = 0;
 
@@ -216,11 +216,11 @@ public static class OneBrc
                     for (; i + 8 <= take; i += 8)
                     {
                         ulong x = *(ulong*)(p + i);
-                        hash = (hash * C) ^ x;
+                        hash = (hash * c) ^ x;
                     }
                     for (; i < take; i++)
                     {
-                        hash = (hash * C) ^ p[i];
+                        hash = (hash * c) ^ p[i];
                     }
 
                     index += take;
@@ -231,18 +231,18 @@ public static class OneBrc
                 for (; j + 8 <= off; j += 8)
                 {
                     ulong x = *(ulong*)(p + j);
-                    hash = (hash * C) ^ x;
+                    hash = (hash * c) ^ x;
                 }
                 for (; j < off; j++)
                 {
-                    hash = (hash * C) ^ p[j];
+                    hash = (hash * c) ^ p[j];
                 }
 
                 index += off + 1;
                 break;
             }
 
-            int nameLength = (int)((buffer + index - 1) - nameStartPtr);
+            int nameLength = (int)(buffer + index - 1 - nameStartPtr);
 
             // -------- Ultra-fast temperature parse --------
 
